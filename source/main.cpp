@@ -15,6 +15,9 @@ extern "C"{
 #define OS_INVALID_HEADER        MAKERESULT(RL_PERMANENT, RS_WRONGARG, RM_OS, 47)
 #define OS_INVALID_IPC_PARAMATER MAKERESULT(RL_PERMANENT, RS_WRONGARG, RM_OS, 48)
 
+#define CSND_PLAYSTATE_PAUSE	0
+#define CSND_PLAYSTATE_PLAY	1
+
 static Result HandleNotifications(int *exit)
 {
     uint32_t notid = 0;
@@ -94,6 +97,9 @@ static Result csndPlaySound_(int chn, u32 flags, u32 sampleRate, float vol, floa
         size -= paddr1 - paddr0;
         CSND_SetBlock(chn, 1, paddr1, size);
     }
+
+    /* Do not start playing when buffer is added. */
+    CSND_SetPlayState(chn, CSND_PLAYSTATE_PAUSE);
 
     return csndExecCmds(true);
 }
@@ -214,34 +220,54 @@ void SoundThreadFunc(void *p)
     snd.decode = true;
     Result ret = 0;
 
-    while(isServiceUsable("csnd:SND") != true) svcSleepThread(1e+9);
+    while(isServiceUsable("csnd:SND") != true)
+	    svcSleepThread(1e+9);
+
     ret = csndInit();
-    if(ret) *(u32*)ret = 0x128;
-    bool decode = true;
+    if(ret)
+	    *(u32*)ret = 0x128;
+
     size_t done = 0;
-    u8 *buffs[] = {snd.data, snd.data2};
+    bool decode[2] = { true, true };
+    u8 *buffs[2] = { snd.data, snd.data2 };
+
     while(1)
     {
+        u8 playing;
+
         /* Set DSP I2S Sound to 0 */
         *(vu16*)0x1EC45000 = ((*(vu16*)0x1EC45000 >> 6) << 6);
-        u8 playing;
-        csndIsPlaying(8, &playing);
-        if(decode)
-        {
-            mpg123_read(snd.mh, (u8*)buffs[!snd.number], snd.dataSize, &done);
-            done = done / sizeof(int16_t);
-            decode = false;
-        }
 
-        if(!playing)
-        {
-            u8 *playbuf = buffs[!snd.number];
-            svcFlushDataCacheRange(playbuf, snd.dataSize);
-            csndPlaySound_(8, SOUND_FORMAT_16BIT, snd.sampleRate, 1.0f, 0, playbuf, NULL, snd.dataSize);
-            decode = true;
-            snd.number = !snd.number;
-        }
-        svcSleepThread(10);
+	/* Decode audio data for the first channel. */
+	mpg123_read(snd.mh, (u8*)buffs[0], snd.dataSize, &done);
+	svcFlushDataCacheRange(buffs[0], snd.dataSize);
+	csndPlaySound_(8, SOUND_FORMAT_16BIT, snd.sampleRate, 1.0f, 0, playbuf,
+			NULL, snd.dataSize);
+
+	/* Wait until the first channel has finished playing before decoding
+	 * more data for it. */
+	do {
+		csndIsPlaying(9, &playing);
+		svcSleepThread(10);
+	} while(playing);
+
+	/* Play the first channel once the second channel has finished. */
+	CSND_SetPlayState(8, CSND_PLAYSTATE_PLAY);
+
+	/* Decode audio data for the first channel. */
+	mpg123_read(snd.mh, (u8*)buffs[1], snd.dataSize, &done);
+	svcFlushDataCacheRange(buffs[1], snd.dataSize);
+	csndPlaySound_(9, SOUND_FORMAT_16BIT, snd.sampleRate, 1.0f, 0, playbuf,
+			NULL, snd.dataSize);
+	/* Wait for the first channel to finish playing before playing the
+	 * second channel. */
+	do {
+		csndIsPlaying(8, &playing);
+		svcSleepThread(10);
+	} while(playing);
+
+	/* Play the first channel once the second channel has finished. */
+	CSND_SetPlayState(9, CSND_PLAYSTATE_PLAY);
     }
 }
 
