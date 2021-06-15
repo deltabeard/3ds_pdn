@@ -244,7 +244,7 @@ void SoundThreadFunc(void *p)
 	csndPlaySound_(8, SOUND_FORMAT_16BIT, snd.sampleRate, 1.0f, 0, playbuf,
 			NULL, snd.dataSize);
 
-	/* Wait until the first channel has finished playing before decoding
+	/* Wait until the second channel has finished playing before decoding
 	 * more data for it. */
 	do {
 		csndIsPlaying(9, &playing);
